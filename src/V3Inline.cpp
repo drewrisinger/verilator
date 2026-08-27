@@ -40,6 +40,9 @@ VL_DEFINE_DEBUG_FUNCTIONS;
 
 // CONFIG
 static const int INLINE_MODS_SMALLER = 100;  // If a mod is < this # nodes, can always inline it
+// Automatic inlining can create pathological dataflow depth on very large designs.
+// Keep explicit user-forced inlining, but disable size-based autoscaling heuristics above this.
+static const size_t INLINE_AUTO_DESIGN_SIZE_MAX = 50000;
 
 //######################################################################
 // Bipartite module instantiation graph containing module and cell vertices
@@ -896,17 +899,20 @@ void V3Inline::inlineAll(AstNetlist* nodep) {
     // Decide which instances to inline
     const size_t designSize
         = graphp->vertices().frontp()->as<InlineModModuleVertex>()->flattenedSize();
+    const bool enableAutoInline = designSize <= INLINE_AUTO_DESIGN_SIZE_MAX;
     for (V3GraphVertex& vtx : graphp->vertices()) {
         if (InlineModModuleVertex* const mVtxp = vtx.cast<InlineModModuleVertex>()) {
             // If this module is less than 10% of the design, flatten this module
-            if (mVtxp->flattenedSize() * 10 < designSize) mVtxp->setFlatten();
+            if (enableAutoInline && mVtxp->flattenedSize() * 10 < designSize) {
+                mVtxp->setFlatten();
+            }
             // Don't inline if can't inline
             if (mVtxp->noInlineHard()) continue;
             // Don't inline if soft off
             if (mVtxp->noInlineSoft()) continue;
             // If all instances of this module combined are less than 20% of the design, inline all
             size_t totalSize = mVtxp->flattenedSize() * mVtxp->instanceCount();
-            if (totalSize * 5 < designSize) {
+            if (enableAutoInline && totalSize * 5 < designSize) {
                 for (V3GraphEdge& edge : mVtxp->inEdges()) {
                     InlineModCellVertex* const cVtxp = edge.fromp()->as<InlineModCellVertex>();
                     cVtxp->setDoInline("< 20% of design");
@@ -931,6 +937,10 @@ void V3Inline::inlineAll(AstNetlist* nodep) {
 
         // Don't inline for other reasons if soft off
         if (mVtx.noInlineSoft()) continue;
+
+        // For very large designs, disable automatic inlining heuristics and keep only explicit
+        // controls (pragma and command line) to avoid pathological netlist depth.
+        if (!enableAutoInline) continue;
 
         // If instatiated in exactly one static site, inline it
         if (mVtx.inSize1()) cVtx.setDoInline("Single static instance");
